@@ -353,8 +353,8 @@ class Model(object):
             final_predicts.append(predict)
 
             # self.final_logits = tf.squeeze(tf.concat([tf.expand_dims(l, 1) for l in final_logits], axis=1), name="final_logits")
-            self.final_logits = tf.nn.softmax(tf.reshape(tf.concat([tf.expand_dims(l, 1) for l in final_logits], axis=1), shape=[-1, self.hparams.target_label_num]),
-                                           name="final_logits")
+            self.final_logits = tf.squeeze(tf.nn.softmax(tf.reshape(tf.concat([tf.expand_dims(l, 1) for l in final_logits], axis=1), shape=[-1, self.hparams.target_label_num]),
+                                           name="final_logits"))
             self.final_predict = tf.concat([tf.expand_dims(p, 1) for p in final_predicts], axis=1)
             if self.hparams.mode in ['train', 'eval', 'inference']:
                 self.accurary = tf.contrib.metrics.accuracy(tf.to_int32(self.final_predict),

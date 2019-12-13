@@ -278,7 +278,7 @@ def train_clf(flags):
                                                                     targets,
                                                                     add_summary=add_summary,
                                                                     run_info=add_summary and flags.debug)
-            print("Epoch = {0}, iteration = {1}, train accu = {2}".format(epoch, i, accuracy))
+            #print("Epoch = {0}, iteration = {1}, train accu = {2}".format(epoch, i, accuracy))
             step_time += (time.time() - start_time)
             checkpoint_loss += batch_loss
             total_train_loss += batch_loss
@@ -304,6 +304,7 @@ def train_clf(flags):
                 step_time, checkpoint_loss, iters, acc = 0.0, 0.0, 0, 0.0
             '''
 
+            '''
             if global_step % flags.steps_per_eval == 0:
                 print_out("# global step {0}, eval model at {1}".format(global_step, time.ctime()))
                 checkpoint_path = train_model.save_model(train_sess)
@@ -342,6 +343,7 @@ def train_clf(flags):
                         train_sess.run(lr)
                         eval_ppls = [best_eval]
                         continue
+            '''
         if flags.encoder == "bi-lstm":
             source_tokens = train_sess.graph.get_operation_by_name("source_tokens").outputs[0]
             sequence_length = train_sess.graph.get_operation_by_name("sequence_length").outputs[0]
