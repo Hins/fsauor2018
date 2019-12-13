@@ -79,10 +79,7 @@ def embedding_dropout(embedding, dropout=0.1):
 
 def _get_embed_device(vocab_size):
     """Decide on which device to place an embed matrix given its vocab size."""
-    if vocab_size > VOCAB_SIZE_THRESHOLD_CPU:
-        return "/cpu:0"
-    else:
-        return "/gpu:0"
+    return "/gpu:1"
 
 def _load_pretrained_emb_from_file(name, vocab_file, embed_file, num_trainable_tokens=0, dtype=tf.float32):
     print("# Start to load pretrained embedding...")

@@ -60,7 +60,7 @@ class DataSet(object):
         self.label_names, self.l2i = read_vocab(label_file)
         self.i2l = {v:k for k,v in self.l2i.items()}
 
-        self.tag_l2i = {"1":0,"0":1,"-1":2,"-2":3}
+        self.tag_l2i = {"0": 0, "1": 1}
         self.tag_i2l = {v:k for k,v in self.tag_l2i.items()}
 
         self._raw_data = []
@@ -136,3 +136,15 @@ class DataSet(object):
                 batch.append(item)
         if len(batch) > 0:
             yield self.process_batch(batch)
+
+    def process_sentence(self):
+        item = self._raw_data[0]
+        content = [item.content]
+        content = _padding(content,item.length)
+        length = np.asarray([item.length])
+        target = np.asarray([item.labels])
+        id = [item.id]
+        return content, length,target,id
+    
+    def get_sentence(self):
+        yield self.process_sentence()

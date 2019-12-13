@@ -22,18 +22,27 @@ class Model(object):
     def build(self):
         self.setup_input_placeholders()
         self.setup_embedding()
+        
         if self.hparams.encoder == 'gnmt':
             self.gnmt_encoder()
+            self.setup_clf()
         elif self.hparams.encoder == 'elmo':
             self.elmo_encoder()
+            self.setup_clf()
+        elif self.hparams.encoder =='cnn':
+            self.cnn()
+        elif self.hparams.encoder == 'bi-lstm':
+            self.setup_bilstm()
+        elif self.hparams.encoder == 'bi-lstm-attention':
+            self.setup_atte_bilstm()
         else:
             raise ValueError("Un-supported encoder %s" % self.hparams.encoder)
-        self.setup_clf()
+
 
         self.params = tf.trainable_variables()
         self.ema = tf.train.ExponentialMovingAverage(decay=0.9999)
         
-        if self.hparams.mode in ['train', 'eval']:
+        if self.hparams.mode in ['train', 'eval','inference']:
             self.setup_loss()
         if self.hparams.mode == 'train':
             self.setup_training()
@@ -73,11 +82,11 @@ class Model(object):
             tf.int32, shape=[None, None], name='source_tokens')
         
         # for training and evaluation
-        if self.hparams.mode in ['train', 'eval']:
+        if self.hparams.mode in ['train', 'eval','inference']:
             self.target_labels = tf.placeholder(
                 tf.float32, shape=[None, self.hparams.feature_num, self.hparams.target_label_num], name='target_labels')
 
-        self.batch_size = tf.shape(self.source_tokens,out_type=tf.int32)[0]
+        self.batch_size = tf.shape(self.source_tokens, out_type=tf.int32)[0]
 
         self.sequence_length = tf.placeholder(
             tf.int32, shape=[None], name='sequence_length')
@@ -138,6 +147,11 @@ class Model(object):
                 with tf.variable_scope("fw_%d" % i) as s:
                     cell = tf.contrib.rnn.LSTMBlockFusedCell(self.hparams.num_units,use_peephole=False)
                     fused_outputs_op, fused_state_op = cell(fw_cell_inputs,sequence_length=self.sequence_length,dtype=inputs.dtype)
+                    '''
+                    cell = tf.nn.rnn_cell.BasicLSTMCell(self.hparams.num_units)
+                    init_state = cell.zero_state(self.hparams.batch_size, dtype=tf.float32)
+                    fused_outputs_op, fused_state_op = tf.nn.dynamic_rnn(cell, fw_cell_inputs, initial_state=init_state, time_major=True)
+                    '''
                     encoder_states.append(fused_state_op)
                 with tf.variable_scope("bw_%d" % i) as s:
                     bw_cell = tf.contrib.rnn.LSTMBlockFusedCell(self.hparams.num_units,use_peephole=False)
@@ -232,6 +246,260 @@ class Model(object):
             self.final_outputs = weight * final_output
             self.final_state = tuple(encoder_states)
     
+    def BiLSTM(self):
+        print_out("BiLSTM")
+        with tf.variable_scope("bilstm") as scope:
+            # inputs shape is [batch_size, max_len, embedding_size]
+            inputs = self.source_embedding
+            '''
+            inputs_reverse = _reverse(
+                inputs, seq_lengths=self.sequence_length,
+                seq_dim=0, batch_dim=1)
+            '''
+            states = []
+            outputs = [tf.concat([inputs, inputs], axis=-1)]
+            # fw_cell_inputs = inputs
+            # bw_cell_inputs = inputs_reverse
+            input_tensor = self.source_embedding
+            for i in range(self.hparams.num_layers):
+                with tf.variable_scope("bilstm_%d" % i) as s:
+                    lstm_cell_fw = tf.contrib.rnn.LSTMCell(self.hparams.num_units)
+                    lstm_cell_bw = tf.contrib.rnn.LSTMCell(self.hparams.num_units)
+                    bilstm_outputs, _ = tf.nn.bidirectional_dynamic_rnn(cell_fw=lstm_cell_fw, cell_bw=lstm_cell_bw,
+                                                                 inputs=self.source_embedding, sequence_length=self.sequence_length,
+                                                                 dtype=tf.float32)
+                    # output_fw shape is [batch_size, max_length, lstm_cell_fw.num_units], output_bw shape is [batch_size, max_length, lstm_cell_bw.num_units]
+                    (output_fw, output_bw) = bilstm_outputs
+                    last_output_fw = tf.split(output_fw, num_or_size_splits=self.hparams.max_len, axis=1)[-1]
+                    last_output_fw = tf.split(output_bw, num_or_size_splits=self.hparams.max_len, axis=1)[-1]
+
+                '''
+                lstm_fw_cell = tf.contrib.rnn.BasicLSTMCell(self.hparams.num_units, forget_bias=1.0)
+                lstm_bw_cell = tf.contrib.rnn.BasicLSTMCell(self.hparams.num_units, forget_bias=1.0)
+                output, output_state_fw, output_state_bw = tf.contrib.rnn.static_bidirectional_rnn(lstm_fw_cell,
+                                                                        lstm_bw_cell, inputs,
+                                                                        dtype=tf.float32)
+                '''
+
+                '''
+                states.append(states_fw)
+                states.append(states_bw)
+                '''
+
+                '''
+                with tf.variable_scope("fw_%d" % i) as s:
+                    cell = tf.contrib.rnn.LSTMBlockFusedCell(self.hparams.num_units, use_peephole=False)
+                    fused_outputs_op, fused_state_op = cell(fw_cell_inputs, sequence_length=self.sequence_length,
+                                                            dtype=inputs.dtype)
+                    states.append(fused_state_op)
+                with tf.variable_scope("bw_%d" % i) as s:
+                    bw_cell = tf.contrib.rnn.LSTMBlockFusedCell(self.hparams.num_units, use_peephole=False)
+                    bw_fused_outputs_op_reverse, bw_fused_state_op = bw_cell(bw_cell_inputs,
+                                                                             sequence_length=self.sequence_length,
+                                                                             dtype=inputs.dtype)
+                    bw_fused_outputs_op = _reverse(bw_fused_outputs_op_reverse, seq_lengths=self.sequence_length,
+                                                   seq_dim=0, batch_dim=1)
+                    states.append(bw_fused_state_op)
+                output = tf.concat([fused_outputs_op, bw_fused_outputs_op], axis=-1)
+                if i > 0:
+                    fw_cell_inputs = output + fw_cell_inputs
+                    bw_cell_inputs = _reverse(output, seq_lengths=self.sequence_length, seq_dim=0,
+                                              batch_dim=1) + bw_cell_inputs
+                else:
+                    fw_cell_inputs = output
+                    bw_cell_inputs = _reverse(output, seq_lengths=self.sequence_length, seq_dim=0, batch_dim=1)
+                '''
+                # tf.concat([output_fw, output_bw], axis=-1) shape is [batch_size, max_length, 2 * num_units]
+                # each element's shape in outputs is [batch_size, max_length, 2 * num_units]
+                outputs.append(tf.concat([output_fw, output_bw], axis=-1))
+
+            final_output = None
+            # embedding + num_layers
+            n = 1 + self.hparams.num_layers
+            scalars = tf.get_variable('scalar', initializer=tf.constant([1 / (n)] * n))
+            self.scalars = scalars
+            weight = tf.get_variable('weight', initializer=tf.constant(0.001))
+            self.weight = weight
+
+            soft_scalars = tf.nn.softmax(scalars)
+            for i, output in enumerate(outputs):
+                if final_output is None:
+                    final_output = soft_scalars[i] * output
+                else:
+                    final_output = final_output + soft_scalars[i] * output
+
+            self.final_outputs = weight * final_output
+            # self.final_state = tuple(states)
+
+            # return shape is [batch_size, max_length, 2 * num_units]
+            return self.final_outputs
+
+    def setup_bilstm(self):
+        final_logits = []
+        final_predicts = []
+        num_units = self.hparams.num_units
+        outputs = self.BiLSTM()
+        with tf.variable_scope("lstm-output"):
+            hidden_layer = tf.layers.Dense(num_units, use_bias=True, activation=tf.nn.relu)
+            output_layer = tf.layers.Dense(self.hparams.target_label_num)
+
+            # for i in range(self.hparams.feature_num):
+                # outputs[:-1:] shape is [batch_size, 2 * num_units]
+            semantic = hidden_layer(outputs[:,-1,:])
+            logits = output_layer(semantic)
+
+            final_logits.append(logits)
+            predict = tf.one_hot(tf.argmax(logits, axis=-1), self.hparams.target_label_num)
+            final_predicts.append(predict)
+
+            # self.final_logits = tf.squeeze(tf.concat([tf.expand_dims(l, 1) for l in final_logits], axis=1), name="final_logits")
+            self.final_logits = tf.nn.softmax(tf.reshape(tf.concat([tf.expand_dims(l, 1) for l in final_logits], axis=1), shape=[-1, self.hparams.target_label_num]),
+                                           name="final_logits")
+            self.final_predict = tf.concat([tf.expand_dims(p, 1) for p in final_predicts], axis=1)
+            if self.hparams.mode in ['train', 'eval', 'inference']:
+                self.accurary = tf.contrib.metrics.accuracy(tf.to_int32(self.final_predict),
+                                                            tf.to_int32(self.target_labels))
+
+
+    def cnn(self):
+        print_out("cnn")
+        # Create a convolution + maxpool layer for each filter size
+        pooled_outputs = []
+        filter_sizes = [3, 4, 5, 6]
+        l2_loss = tf.constant(0.0)
+        for i, filter_size in enumerate(filter_sizes):  # "filter_sizes", "3,4,5",
+            with tf.variable_scope("cnn") as scope:
+                inputs = self.source_embedding
+                '''
+                max_sentence_length = 300 # 最大句子长度，也就是说文本样本中字词的最大长度，不足补零，多余的截断
+                embedding_dim = 128 #词向量长度，即每个字词的维度
+                filter_sizes = [3, 4, 5, 6] #卷积核大小
+                num_filters = 200  # Number of filters per filter size 卷积个数
+                base_lr=0.001      # 学习率
+                dropout_keep_prob = 0.5
+                l2_reg_lambda = 0.0  # "L2 regularization lambda (default: 0.0)
+                '''
+                filter_shape = [filter_size, self.hparams.embedding_size, 1, self.hparams.num_filters]  # num_filters= 200
+                # filter_shape =[height, width, in_channels, output_channels]
+
+                W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1), name="W")
+                b = tf.Variable(tf.constant(0.1, shape=[self.hparams.num_filters]), name="b")
+                inputs = tf.reshape(inputs, shape=[self.batch_size, -1, self.hparams.embedding_size, 1])
+                conv = tf.nn.conv2d(inputs,
+                                    W,
+                                    strides=[1, 1, 1, 1],
+                                    padding="VALID",
+                                    name="conv")
+                # Apply nonlinearity
+                h = tf.nn.relu(tf.nn.bias_add(conv, b), name="relu")
+                # Maxpooling over the outputs
+                pooled = tf.reduce_max(h, axis=1, keep_dims=True)
+                '''
+                pooled = tf.nn.max_pool(
+                    self.h,
+                    ksize=[1, self.sequence_length - filter_size + 1, 1, 1],
+                    #ksize=[1, self.hparams.max_len - filter_size + 1, 1, 1],
+                    strides=[1, 1, 1, 1],
+                    padding="VALID",
+                    name="pool")
+                '''
+                pooled_outputs.append(pooled)
+        # Combine all the pooled features
+        num_filters_total = self.hparams.num_filters * len(filter_sizes)
+        self.h_pool = tf.concat(pooled_outputs, 3)
+        print("self.h_pool shape is ")
+        print(self.h_pool.get_shape())
+        # self.h_pool = tf.concat(3, pooled_outputs)
+        self.h_pool_flat = tf.reshape(self.h_pool, [-1, num_filters_total])
+        print("self.h_pool_flat shape is ")
+        print(self.h_pool_flat.get_shape())
+        with tf.name_scope("dropout"):
+            self.h_drop = tf.nn.dropout(self.h_pool_flat, self.dropout_keep_prob)
+        with tf.name_scope("output"):
+            W = tf.get_variable("W",
+                                shape=[num_filters_total, self.hparams.target_label_num],
+                                initializer=tf.contrib.layers.xavier_initializer())
+            b = tf.Variable(tf.constant(0.1, shape=[self.hparams.target_label_num], name="b"))
+            l2_loss += tf.nn.l2_loss(W)
+            l2_loss += tf.nn.l2_loss(b)
+            #setup_training ratio setup_loss losses
+            self.scores = tf.nn.xw_plus_b(self.h_drop, W, b, name="scores")
+            final_logits = []
+            final_predicts = []
+            logits = self.scores
+            self.final_logits = self.scores
+            final_logits.append(logits)
+            predict = tf.argmax(logits, axis=-1)
+            predict = tf.one_hot(predict, self.hparams.target_label_num)
+            final_predicts.append(predict)
+
+        #self.final_logits = tf.concat([tf.expand_dims(l, 1) for l in final_logits], axis=1)
+        self.final_predict = tf.concat([tf.expand_dims(p, 1) for p in final_predicts], axis=1)
+        if self.hparams.mode in ['train', 'eval','inference']:
+            #self.accurary = tf.contrib.metrics.accuracy(tf.to_int32(self.final_predict),
+            self.accurary = tf.contrib.metrics.accuracy(tf.to_int32(predict),
+                                                        tf.to_int32(self.target_labels))
+
+    def attention(self, H):
+        """
+        利用Attention机制得到句子的向量表示
+        """
+        # 获得最后一层LSTM的神经元数量
+        hiddenSize = self.hparams.num_units
+
+        # 初始化一个权重向量，是可训练的参数
+        W = tf.Variable(tf.random_normal([hiddenSize], stddev=0.1))
+
+        # 对Bi-LSTM的输出用激活函数做非线性转换
+        M = tf.tanh(H)
+
+        # 对W和M做矩阵运算，W=[batch_size, time_step, hidden_size]，计算前做维度转换成[batch_size * time_step, hidden_size]
+        # newM = [batch_size, time_step, 1]，每一个时间步的输出由向量转换成一个数字
+        newM = tf.matmul(tf.reshape(M, [-1, hiddenSize]), tf.reshape(W, [-1, 1]))
+
+        # 对newM做维度转换成[batch_size, time_step]
+        restoreM = tf.reshape(newM, [-1, self.sequence_length])
+
+        # 用softmax做归一化处理[batch_size, time_step]
+        self.alpha = tf.nn.softmax(restoreM)
+
+        # 利用求得的alpha的值对H进行加权求和，用矩阵运算直接操作
+        r = tf.matmul(tf.transpose(H, [0, 2, 1]), tf.reshape(self.alpha, [-1, self.sequence_length, 1]))
+
+        # 将三维压缩成二维sequeezeR=[batch_size, hidden_size]
+        sequeezeR = tf.squeeze(r)
+        sentenceRepren = tf.tanh(sequeezeR)
+
+        # 对Attention的输出可以做dropout处理
+        output = tf.nn.dropout(sentenceRepren, self.dropoutKeepProb)
+        return output
+
+    def setup_atte_bilstm(self):
+        l2Loss = tf.constant(0.0)
+        bi_lstm_output = self.BiLSTM()
+        output_attention = self.attention(bi_lstm_output)
+        final_logits = []
+        final_predicts = []
+        num_units = self.hparams.num_units
+
+        with tf.variable_scope("output"):
+            hidden_layer = tf.layers.Dense(num_units, use_bias=True, activation=tf.nn.relu)
+            output_layer = tf.layers.Dense(self.hparams.target_label_num)
+
+            for i in range(self.hparams.feature_num):
+                semantic = hidden_layer(output_attention)
+                logits = output_layer(semantic)
+
+                final_logits.append(logits)
+                predict = tf.argmax(logits, axis=-1)
+                predict = tf.one_hot(predict, self.hparams.target_label_num)
+                final_predicts.append(predict)
+            self.final_logits = tf.concat([tf.expand_dims(l, 1) for l in final_logits], axis=1)
+            self.final_predict = tf.concat([tf.expand_dims(p, 1) for p in final_predicts], axis=1)
+            if self.hparams.mode in ['train', 'eval','inference']:
+                self.accurary = tf.contrib.metrics.accuracy(tf.to_int32(self.final_predict),
+                                                            tf.to_int32(self.target_labels))        
+    
     def setup_attention_semantic(self):
         num_units = self.hparams.num_units * 2 if self.hparams.double_decoder else self.hparams.num_units
         with tf.variable_scope("attention_semantic") as scope:
@@ -279,8 +547,10 @@ class Model(object):
                     final_predicts.append(predict)
 
             self.final_logits = tf.concat([tf.expand_dims(l,1) for l in final_logits],axis=1)
+            self.final_logits2 = tf.nn.softmax(tf.reshape(tf.concat([tf.expand_dims(l, 1) for l in final_logits], axis=1), shape=[-1, self.hparams.target_label_num]),
+                                           name="final_logits")
             self.final_predict = tf.concat([tf.expand_dims(p,1) for p in final_predicts],axis=1)
-            if self.hparams.mode in ['train','eval']:
+            if self.hparams.mode in ['train','eval','inference']:
                 self.accurary = tf.contrib.metrics.accuracy(tf.to_int32(self.final_predict),tf.to_int32(self.target_labels))
 
     def setup_loss(self):
@@ -339,26 +609,25 @@ class Model(object):
             run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
             run_metadata = tf.RunMetadata()
 
-            _, batch_loss, summary, global_step, accuracy, token_num, batch_size = sess.run(
-            [self.train_op, self.losses, self.summary_op, self.global_step, self.accurary, self.predict_token_num, self.batch_size],
+            _, batch_loss, summary, accuracy = sess.run(
+            [self.train_op, self.losses, self.summary_op, self.accurary],
                 feed_dict=feed_dict,
                 options=run_options,
                 run_metadata=run_metadata)
             
         else:
-            _, batch_loss, summary, global_step, accuracy, token_num, batch_size = sess.run(
-                [self.train_op, self.losses, self.summary_op, self.global_step, self.accurary, self.predict_token_num, self.batch_size],
+            _, batch_loss, summary, accuracy = sess.run(
+                [self.train_op, self.losses, self.summary_op, self.accurary],
                 feed_dict = feed_dict
             )
         if run_info:
             self.summary_writer.add_run_metadata(
-                run_metadata, 'step%03d' % global_step)
-            print("adding run meta for", global_step)
+                run_metadata, 'step%03d' % 1)
 
 
         if add_summary:
-            self.summary_writer.add_summary(summary, global_step=global_step)
-        return batch_loss, global_step, accuracy, token_num, batch_size
+            self.summary_writer.add_summary(summary, global_step=1)
+        return batch_loss, accuracy
 
     def eval_clf_one_step(self, sess, source, lengths, targets):
         feed_dict = {}

@@ -63,7 +63,7 @@ def single_rnn_cell(cell_name, num_units, train_phase=True, keep_prob=0.75, weig
     elif cell_name == "LSTM":
         cell = tf.contrib.rnn.LSTMCell(num_units)
     elif cell_name == 'block_lstm'.upper():
-        cell = tf.contrib.rnn.LSTMBlockCell(num_units)
+        cell = tensorflow.contrib.rnn.LSTMBlockCell(num_units)
     elif cell_name == 'WEIGHT_LSTM':
         from thrid_utils import WeightDropLSTMCell
         cell = WeightDropLSTMCell(num_units,weight_keep_drop=weight_keep_drop,mode=tf.estimator.ModeKeys.TRAIN if train_phase and weight_keep_drop<1.0 else tf.estimator.ModeKeys.PREDICT)
@@ -150,6 +150,22 @@ def cal_f1(label_num,predicted,truth):
     #     print(i,results[i], precision[i], recall[i], f1[i])
     return sum(f1)/label_num, sum(precision)/label_num, sum(recall)/label_num
 
+
+from sklearn import metrics
+from sklearn.metrics import precision_recall_curve
+from sklearn.metrics import average_precision_score
+from sklearn.metrics import accuracy_score
+
+def actual_f1(label_num,predicted,truth):
+    acc = accuracy_score(truth, predicted)
+    precs = metrics.precision_score(truth, predicted, average=None)#
+    recalls = metrics.recall_score(truth, predicted, average=None)#
+    f1s = metrics.f1_score(truth, predicted, average=None)#
+    print(acc,precs,recalls,f1s)
+    total_f1 = metrics.f1_score(truth, predicted, average='macro')
+    total_pre=metrics.precision_score(truth, predicted, average='macro')
+    total_recall=metrics.recall_score(truth, predicted, average='macro')
+    return precs,recalls,f1s,total_f1,total_pre,total_recall
 
 def load_hparams(out_dir, overidded = None):
     hparams_file = os.path.join(out_dir,"hparams")
