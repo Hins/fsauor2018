@@ -8,12 +8,14 @@ import numpy as np
 
 parser = argparse.ArgumentParser(description='sentiment offline mine logic')
 parser.add_argument('--cond', type=str, default='provider', help='query log')
-parser.add_argument('--dict', type=str, default='sentiment.dict.20191212', help='sentiment dict')
+parser.add_argument('--dict', type=str, default='/home/work/xtpan/sentiment/data/sentiment.dict.20191212', help='sentiment dict')
 parser.add_argument('--log', type=str, default='log', help='query log')
-#parser.add_argument('--log', type=str, default='sample.txt', help='query log')
 parser.add_argument('--log_all', type=str, default='log.all', help='all query log')
+parser.add_argument('--sample_size', type=int, default=1000, help='sample size')
 parser.add_argument('--output', type=str, default='neg_sample.dat', help='negative sample file')
 parser.add_argument('--output_all', type=str, default='neg_sample.dat.all', help='negative all sample file')
+parser.add_argument('--negout', type=str, default='sample.neg', help='negative samples')
+parser.add_argument('--negout_all', type=str, default='sample.neg.all', help='negative all samples')
 args = parser.parse_args()
 
 sentiment_set = set()
@@ -24,6 +26,7 @@ with open(args.dict, 'r') as f:
 print("sentiment dict size is {0}".format(len(sentiment_set)))
 
 output_file = open(args.output if args.cond == "provider" else args.output_all, 'w')
+neg_output_file = open(args.negout if args.cond == "provider" else args.negout_all, 'w')
 dedup_set = set()
 START_FLAG = "\"query\":\""
 END_FLAG = "\",\"confidence\""
@@ -49,13 +52,12 @@ with open(input_file, 'r') as f:
         dedup_set.add(query)
         for kw in sentiment_set:
             if kw in query:
-                output_file.write(query + "\n")
+                neg_output_file.write(query + "\n")
                 break
     f.close()
-'''
 dedup_set = list(dedup_set)
-random_list = np.random.randint(0, len(dedup_set) - 1, 1000)
+random_list = np.random.randint(0, len(dedup_set) - 1, args.sample_size)
 for i in random_list:
     output_file.write(dedup_set[i] + '\n')
-'''
 output_file.close()
+neg_output_file.close()

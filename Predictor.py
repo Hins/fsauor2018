@@ -28,6 +28,7 @@ parser.add_argument('--char_output', type=str, default='/home/work/xtpan/hotel/d
 parser.add_argument('--negative_dict', type=str, default='/home/work/xtpan/hotel/data/negative.dict', help='char badcase file')
 parser.add_argument('--mode', type=str, default='daily', help='validation mode')
 parser.add_argument('--batch_size', type=int, default=512, help='prediction batch size')
+parser.add_argument('--negmail', type=str, default='sample.neg', help='negative samples')
 args = parser.parse_args()
 
 if args.segment_gran == 'word':
