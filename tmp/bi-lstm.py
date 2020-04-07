@@ -18,9 +18,9 @@ with open('dict.txt', 'r') as f:
 
 class BiLSTM(object):
     def __init__(self, sess, flag='concat'):
-        self.input = tf.placeholder(dtype=tf.int32, shape=[None, None])
+        self.input = tf.placeholder(dtype=tf.int32, shape=[None, None], name="input")
         self.label = tf.placeholder(dtype=tf.float32, shape=[None])
-        self.length = tf.placeholder(dtype=tf.int32, shape=[None])
+        self.length = tf.placeholder(dtype=tf.int32, shape=[None], name="length")
         self.max_size = tf.placeholder(dtype=tf.int32, shape=[])
         self.global_step = tf.placeholder('int64', None, name='learning_rate_step')
         self.sess = sess
@@ -39,7 +39,7 @@ class BiLSTM(object):
             out, state = tf.nn.bidirectional_dynamic_rnn(cell_fw=lstm_cell_fw, cell_bw=lstm_cell_bw, inputs=word_embed_init,
                                                          sequence_length=self.length, dtype=tf.float32)
             bilstm_output = tf.concat([out[0][:,-1,:], out[1][:,-1,:]], 1)
-            self.dense_layer = tf.squeeze(tf.layers.dense(inputs=bilstm_output, units=1, activation=tf.nn.leaky_relu))
+            self.dense_layer = tf.squeeze(tf.layers.dense(inputs=bilstm_output, units=1, activation=tf.nn.leaky_relu), name="logits")
             self.loss = tf.reduce_mean(
                 tf.nn.sigmoid_cross_entropy_with_logits(labels=self.label, logits=self.dense_layer))
             global_value = tf.identity(self.global_step)
@@ -108,6 +108,7 @@ with tf.Session(config=config) as sess:
     epoch_iter = 0
 
     global_max_len = -1
+    best_accu = -1.0
     while epoch_iter < cfg.epoch_size:
         '''
         filename_queue = tf.train.string_input_producer([filename], num_epochs=1)
@@ -165,5 +166,18 @@ with tf.Session(config=config) as sess:
         length.fill(val_max_len)
         samples = tf.keras.preprocessing.sequence.pad_sequences(validation_list, maxlen=max_len, padding='post')
         eval_val = modelObj.predict(samples, np.asarray(validation_label_list, dtype=np.int32), length)
-        print("epoch is {0}, accu is {1}".format(epoch_iter, float(eval_val[0]) / float(length.shape[0])))
+        epoch_accu = float(eval_val[0]) / float(length.shape[0])
+        if epoch_accu > best_accu:
+            best_accu = epoch_accu
+            best_accu_idx = epoch_iter
+        print("epoch is {0}, accu is {1}".format(epoch_iter, epoch_accu))
         epoch_iter += 1
+        sess_input = sess.graph.get_operation_by_name("input").outputs[0]
+        sess_length = sess.graph.get_operation_by_name("length").outputs[0]
+        sess_logits = sess.graph.get_operation_by_name("logits").outputs[0]
+        tf.saved_model.simple_save(sess,
+                                   './model/' + str(epoch_iter) + "/",
+                                   inputs={"input": sess_input,
+                                           "length": sess_length},
+                                   outputs={"logits": sess_logits})
+    print("best epoch model is {0}".format(best_accu_idx))
