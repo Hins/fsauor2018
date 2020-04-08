@@ -3,6 +3,7 @@
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../Reinforcement-learning-with-tensorflow" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../bert" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../tianshou" vcs="Git" />
   </component>
 </project>

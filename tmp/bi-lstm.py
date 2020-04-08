@@ -60,7 +60,13 @@ class BiLSTM(object):
 
             self.eval = tf.reduce_sum(
                 tf.cast(tf.equal(tf.cast(self.label, dtype=tf.int32),
-                                tf.cast(tf.argmax(tf.concat([tf.expand_dims(1.0 - self.dense_layer, -1), tf.expand_dims(self.dense_layer, -1)], 1), 1), dtype=tf.int32)), dtype=tf.int32))
+                                tf.cast(tf.argmax(
+                                    tf.concat([tf.expand_dims(1.0 - self.dense_layer, -1), tf.expand_dims(self.dense_layer, -1)], 1), 1), dtype=tf.int32)), dtype=tf.int32))
+
+            self.epoch_loss = tf.placeholder(tf.float32)
+            self.epoch_loss_summary = tf.summary.scalar('epoch_loss', self.epoch_loss)
+            self.epoch_accu = tf.placeholder(tf.float32)
+            self.epoch_accu_summary = tf.summary.scalar('epoch_accu', self.epoch_accu)
 
     def get_dense_layer(self, input, label, length):
         return self.sess.run([self.tmp], feed_dict={
@@ -82,18 +88,70 @@ class BiLSTM(object):
             self.label: label,
             self.length: length})
 
-data_list = []
-label_list = []
-with open("train.csv", 'r') as f:
-    for line in f:
-        elements = line.strip('\r\n').split(',')
-        data_list.append([int(item) for item in elements[:-1]])
-        label_list.append(int(elements[-1]))
-    f.close()
+    def get_loss_summary(self, epoch_loss):
+        return self.sess.run(self.epoch_loss_summary, feed_dict={self.epoch_loss: epoch_loss})
+
+    def get_accu_summary(self, epoch_accu):
+        return self.sess.run(self.epoch_accu_summary, feed_dict={self.epoch_accu : epoch_accu})
+
+def vanilla_data_fetch():
+    data_list = []
+    label_list = []
+    with open("train.csv", 'r') as f:
+        for line in f:
+            elements = line.strip('\r\n').split(',')
+            data_list.append([int(item) for item in elements[:-1]])
+            label_list.append(int(elements[-1]))
+        f.close()
+    return data_list, label_list
+
+def tfrecord_data_fetch():
+    filename_queues = tf.train.string_input_producer(["./train.tfrecord"])
+    reader = tf.TFRecordReader()
+    _, serialized_example = reader.read(filename_queues)
+    features = tf.parse_single_example(serialized_example,
+        features={
+            'feature': tf.FixedLenFeature([cfg.train_max_len_size], tf.int64),
+            'feature_len': tf.FixedLenFeature([1], tf.int64),
+            'label': tf.FixedLenFeature([1], tf.int64),
+        })
+    train_samples = tf.cast(features["feature"], tf.int32)
+    train_samples_len = tf.cast(features["feature_len"], tf.int32)
+    train_labels = tf.cast(features["label"], tf.int32)
+    return train_samples, train_samples_len, train_labels
+
+# tf.train.shuffle_batch([train_samples, train_labels], batch_size=cfg.batch_size, num_threads=3, capacity=capacity, min_after_dequeue=min_after_dequeue)
+
+def tfrd_extraction(serial_exmp):
+    feature_list = tf.parse_single_example(serial_exmp,
+        features={
+        'feature': tf.FixedLenFeature([cfg.train_max_len_size], tf.int64),
+        'feature_len': tf.FixedLenFeature([], tf.int64),
+        'label': tf.FixedLenFeature([], tf.int64),
+    })
+    feature = tf.cast(feature_list["feature"], dtype=tf.int32)
+    len = tf.cast(feature_list["feature_len"], dtype=tf.int32)
+    label = tf.cast(feature_list["label"], tf.int32)
+    return feature, len, label
+
+def streaming_data_fetch():
+    dataset = tf.data.TFRecordDataset("./train.tfrecord")
+    dataset = dataset.map(tfrd_extraction)
+    dataset = dataset.repeat(cfg.epoch_size)
+    # dataset = dataset.shuffle()
+    dataset = dataset.batch(cfg.batch_size)
+    dataset = dataset.prefetch(1)  # prefetch
+    iterator = dataset.make_one_shot_iterator()
+    return iterator.get_next()
+
 validation_list = []
 validation_label_list = []
+dedup_val_dict = {}
 with open("val.csv", 'r') as f:
     for line in f:
+        if line in dedup_val_dict:
+            continue
+        dedup_val_dict[line] = 1
         elements = line.strip('\r\n').split(',')
         validation_list.append([int(item) for item in elements[:-1]])
         validation_label_list.append(int(elements[-1]))
@@ -101,46 +159,95 @@ with open("val.csv", 'r') as f:
 
 config = tf.ConfigProto(allow_soft_placement=True)
 with tf.Session(config=config) as sess:
+    train_writer = tf.summary.FileWriter(cfg.summaries_dir + cfg.train_summary_writer_path, sess.graph)
     modelObj = BiLSTM(sess)
     tf.global_variables_initializer().run()
     trainable = False
-    filename = "train.csv"
     epoch_iter = 0
+
+    coord = tf.train.Coordinator()
+    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
     global_max_len = -1
     best_accu = -1.0
-    while epoch_iter < cfg.epoch_size:
+    train_sample_size = 0
+    total_loss = 0.0
+    while True:
+        train_feature, train_len, train_label = sess.run(streaming_data_fetch())
         '''
-        filename_queue = tf.train.string_input_producer([filename], num_epochs=1)
-        sess.run(tf.initialize_local_variables())
-        reader = tf.TextLineReader(skip_header_lines=0)
-        key, value = reader.read(filename_queue)
-        tf.train.start_queue_runners()
-        batch_iter = 0
+        cur_batch_size = train_feature.shape[0]
         batch_samples = []
         batch_labels = []
+        max_len = -1
+        for i in range(cur_batch_size):
+            batch_samples.append(train_feature[i][:train_len[i][0]].astype(np.int32).tolist())
+            batch_labels.append(train_label[i][0])
+            if train_len[i][0] > max_len:
+                max_len = train_len[i][0]
+            train_sample_size += 1
+        if max_len > global_max_len:
+            global_max_len = max_len
+        samples = tf.keras.preprocessing.sequence.pad_sequences(batch_samples, maxlen=max_len, padding='post')
+        length = np.zeros(shape=[len(batch_samples)], dtype=np.int32)
+        length.fill(max_len)
+        labels = np.asarray(batch_labels, dtype=np.float32)
+        _, loss = modelObj.train(samples, labels, length, max_len, epoch_iter)
         '''
+        _, loss = modelObj.train(train_feature, train_label, train_len, max_len, epoch_iter)
+        total_loss += loss
+    total_loss /= float(train_sample_size)
+    print("epoch is {0}, loss is {1}".format(epoch_iter, total_loss))
+    loss_summary = modelObj.get_loss_summary(total_loss)
+    train_writer.add_summary(loss_summary, epoch_iter)
+
+    val_max_len = -1
+    for item in validation_list:
+        if len(item) > val_max_len:
+            val_max_len = len(item)
+    if val_max_len > global_max_len:
+        val_max_len = global_max_len
+    length = np.zeros(shape=[len(validation_list)], dtype=np.int32)
+    length.fill(val_max_len)
+    samples = tf.keras.preprocessing.sequence.pad_sequences(validation_list, maxlen=max_len, padding='post')
+    eval_val = modelObj.predict(samples, np.asarray(validation_label_list, dtype=np.int32), length)
+    epoch_accu = float(eval_val[0]) / float(length.shape[0])
+    accu_summary = modelObj.get_accu_summary(epoch_accu)
+    train_writer.add_summary(accu_summary, epoch_iter)
+    if epoch_accu > best_accu:
+        best_accu = epoch_accu
+        best_accu_idx = epoch_iter
+    print("epoch is {0}, accu is {1}".format(epoch_iter, epoch_accu))
+    epoch_iter += 1
+    sess_input = sess.graph.get_operation_by_name("input").outputs[0]
+    sess_length = sess.graph.get_operation_by_name("length").outputs[0]
+    sess_logits = sess.graph.get_operation_by_name("logits").outputs[0]
+    tf.saved_model.simple_save(sess,
+                               './model/' + str(epoch_iter) + "/",
+                               inputs={"input": sess_input,
+                                       "length": sess_length},
+                               outputs={"logits": sess_logits})
+    '''
+    while epoch_iter < cfg.epoch_size:
         total_loss = 0.0
         try:
-            iter = 0
-            offset = 0
-            while offset < len(data_list):
-                prev_offset = offset
+            train_sample_size = 0
+            train_samples, train_samples_len, train_labels = tfrecord_data_fetch()
+            while True:
                 if trainable is True:
                     tf.get_variable_scope().reuse_variables()
                 trainable = True
-                if (iter + 1) * cfg.batch_size > len(data_list):
-                    offset = len(data_list)
-                else:
-                    offset = (iter + 1) * cfg.batch_size
                 batch_samples = []
                 batch_labels = []
                 max_len = -1
-                for i in range(prev_offset, offset, 1):
-                    batch_samples.append(data_list[i])
-                    batch_labels.append(label_list[i])
-                    if len(data_list[i]) > max_len:
-                        max_len = len(data_list[i])
+                iter = 0
+                while iter < cfg.batch_size:
+                    sess_feature, sess_len, sess_label = sess.run([train_samples, train_samples_len, train_labels])
+                    batch_samples.append(sess_feature)
+                    batch_labels.append(sess_label[0])
+                    if sess_len[0] > max_len:
+                        max_len = sess_len[0]
+                    iter += 1
+                    train_sample_size += 1
                 # max_len = 10
                 if max_len > global_max_len:
                     global_max_len = max_len
@@ -149,11 +256,12 @@ with tf.Session(config=config) as sess:
                 length.fill(max_len)
                 labels = np.asarray(batch_labels, dtype=np.float32)
                 _, loss = modelObj.train(samples, labels, length, max_len, epoch_iter)
-                #print(modelObj.get_dense_layer(samples, labels, length))
-                # global_val = modelObj.get_dense_layer(samples, labels, length)
                 total_loss += loss
                 iter += 1
-            print("epoch is {0}, loss is {1}".format(epoch_iter, loss))
+            total_loss /= float(train_sample_size)
+            print("epoch is {0}, loss is {1}".format(epoch_iter, total_loss))
+            loss_summary = modelObj.get_loss_summary(total_loss)
+            train_writer.add_summary(loss_summary, epoch_iter)
         except tf.errors.OutOfRangeError:
             print("There are examples")
         val_max_len = -1
@@ -167,6 +275,8 @@ with tf.Session(config=config) as sess:
         samples = tf.keras.preprocessing.sequence.pad_sequences(validation_list, maxlen=max_len, padding='post')
         eval_val = modelObj.predict(samples, np.asarray(validation_label_list, dtype=np.int32), length)
         epoch_accu = float(eval_val[0]) / float(length.shape[0])
+        accu_summary = modelObj.get_accu_summary(epoch_accu)
+        train_writer.add_summary(accu_summary, epoch_iter)
         if epoch_accu > best_accu:
             best_accu = epoch_accu
             best_accu_idx = epoch_iter
@@ -181,3 +291,5 @@ with tf.Session(config=config) as sess:
                                            "length": sess_length},
                                    outputs={"logits": sess_logits})
     print("best epoch model is {0}".format(best_accu_idx))
+    train_writer.close()
+    '''
