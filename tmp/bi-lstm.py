@@ -46,10 +46,14 @@ class BiLSTM(object):
             self.loss = tf.reduce_mean(
                 tf.nn.sigmoid_cross_entropy_with_logits(labels=self.label, logits=self.dense_layer))
             global_value = tf.identity(self.global_step)
-            self.learning_rate = tf.train.exponential_decay(0.001,
+            '''
+            self.learning_rate = tf.train.exponential_decay(1.0,
                                                        global_value,
                                                        decay_steps=cfg.epoch_size,
-                                                       decay_rate=0.03)
+                                                       decay_rate=0.03,
+                                                       staircase=True)
+            '''
+            self.learning_rate = tf.train.polynomial_decay(1.0, global_value, decay_steps=cfg.epoch_size)
 
             '''
             # truncated adam learning method
@@ -60,7 +64,7 @@ class BiLSTM(object):
                     grads[i] = (tf.clip_by_norm(g, 5), v)  # clip gradients
             self.opt = optimizer.apply_gradients(grads)
             '''
-            self.opt = tf.train.GradientDescentOptimizer(1.0).minimize(self.loss, global_step=None)
+            self.opt = tf.train.GradientDescentOptimizer(self.learning_rate).minimize(self.loss, global_step=None)
 
             # dynamic learning rate adam
             # self.opt = tf.train.AdamOptimizer(learning_rate).minimize(self.loss, global_step=None)
