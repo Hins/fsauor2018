@@ -118,7 +118,7 @@ print("path is {0}".format(args.path))
 
 #slice_features, slice_lengths, slice_labels = data_fetch.slice_input_producer_data_fetch("./train.csv")
 
-train_size = 3974
+train_size = 39727
 config = tf.ConfigProto(allow_soft_placement=True)
 with tf.Session(config=config) as sess:
     train_writer = tf.summary.FileWriter(cfg.summaries_dir + cfg.train_summary_writer_path, sess.graph)
