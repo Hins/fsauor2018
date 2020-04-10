@@ -6,6 +6,7 @@ import tensorflow.contrib as contrib
 import datetime
 import numpy as np
 from config import cfg
+import data_fetch
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
@@ -45,11 +46,13 @@ class BiLSTM(object):
             self.loss = tf.reduce_mean(
                 tf.nn.sigmoid_cross_entropy_with_logits(labels=self.label, logits=self.dense_layer))
             global_value = tf.identity(self.global_step)
-            learning_rate = tf.train.exponential_decay(0.001,
+            self.learning_rate = tf.train.exponential_decay(0.001,
                                                        global_value,
                                                        decay_steps=cfg.epoch_size,
                                                        decay_rate=0.03)
+
             '''
+            # truncated adam learning method
             optimizer = tf.train.AdamOptimizer(learning_rate, beta1=0.5)
             grads = optimizer.compute_gradients(self.loss)
             for i, (g, v) in enumerate(grads):
@@ -57,8 +60,10 @@ class BiLSTM(object):
                     grads[i] = (tf.clip_by_norm(g, 5), v)  # clip gradients
             self.opt = optimizer.apply_gradients(grads)
             '''
+            self.opt = tf.train.GradientDescentOptimizer(1.0).minimize(self.loss, global_step=None)
 
-            self.opt = tf.train.AdamOptimizer(learning_rate).minimize(self.loss, global_step=None)
+            # dynamic learning rate adam
+            # self.opt = tf.train.AdamOptimizer(learning_rate).minimize(self.loss, global_step=None)
             '''
             self.opt = tf.train.AdamOptimizer().minimize(self.loss)
             '''
@@ -73,11 +78,12 @@ class BiLSTM(object):
             self.epoch_accu = tf.placeholder(tf.float32)
             self.epoch_accu_summary = tf.summary.scalar('epoch_accu', self.epoch_accu)
 
-    def get_dense_layer(self, input, label, length):
-        return self.sess.run([self.tmp], feed_dict={
+    def get_dense_layer(self, input, label, length, global_step):
+        return self.sess.run([self.learning_rate], feed_dict={
             self.input: input,
             self.label: label,
-            self.length: length})
+            self.length: length,
+            self.global_step: global_step})
 
     def train(self, input, label, length, max_size, global_step):
         return self.sess.run([self.opt, self.loss], feed_dict={
@@ -99,105 +105,14 @@ class BiLSTM(object):
     def get_accu_summary(self, epoch_accu):
         return self.sess.run(self.epoch_accu_summary, feed_dict={self.epoch_accu : epoch_accu})
 
-def vanilla_data_fetch():
-    data_list = []
-    label_list = []
-    with open("train.csv", 'r') as f:
-        for line in f:
-            elements = line.strip('\r\n').split(',')
-            data_list.append([int(item) for item in elements[:-1]])
-            label_list.append(int(elements[-1]))
-        f.close()
-    return data_list, label_list
-
-def tfrecord_data_fetch():
-    filename_queues = tf.train.string_input_producer(["./train.tfrecord"])
-    reader = tf.TFRecordReader()
-    _, serialized_example = reader.read(filename_queues)
-    features = tf.parse_single_example(serialized_example,
-        features={
-            'feature': tf.FixedLenFeature([cfg.train_max_len_size], tf.int64),
-            'feature_len': tf.FixedLenFeature([1], tf.int64),
-            'label': tf.FixedLenFeature([1], tf.int64),
-        })
-    train_samples = tf.cast(features["feature"], tf.int32)
-    train_samples_len = tf.cast(features["feature_len"], tf.int32)
-    train_labels = tf.cast(features["label"], tf.int32)
-    return train_samples, train_samples_len, train_labels
-
 # tf.train.shuffle_batch([train_samples, train_labels], batch_size=cfg.batch_size, num_threads=3, capacity=capacity, min_after_dequeue=min_after_dequeue)
-
-def tfrd_extraction(serial_exmp):
-    feature_list = tf.parse_single_example(serial_exmp,
-        features={
-        'feature': tf.FixedLenFeature([cfg.train_max_len_size], tf.int64),
-        'feature_len': tf.FixedLenFeature([], tf.int64),
-        'label': tf.FixedLenFeature([], tf.int64),
-    })
-    feature = tf.cast(feature_list["feature"], dtype=tf.int32)
-    len = tf.cast(feature_list["feature_len"], dtype=tf.int32)
-    label = tf.cast(feature_list["label"], tf.int32)
-    return feature, len, label
-
-def streaming_data_fetch():
-    dataset = tf.data.TFRecordDataset("./train.tfrecord")
-    dataset = dataset.map(tfrd_extraction)
-    dataset = dataset.shuffle(10000)
-    dataset = dataset.repeat(cfg.epoch_size)
-    dataset = dataset.batch(cfg.batch_size)
-    dataset = dataset.prefetch(1)  # prefetch
-    iterator = dataset.make_one_shot_iterator()
-    return iterator.get_next()
-
-def make_train_set(train_feature, train_len, train_label):
-    batch_samples = []
-    batch_labels = []
-    max_len = -1
-    for i in range(train_feature.shape[0]):
-        batch_samples.append(train_feature[i][:train_len[i]].astype(np.int32).tolist())
-        batch_labels.append(train_label[i])
-        if train_len[i] > max_len:
-            max_len = train_len[i]
-    samples = tf.keras.preprocessing.sequence.pad_sequences(batch_samples, maxlen=max_len, padding='post')
-    length = np.zeros(shape=[len(batch_samples)], dtype=np.int32)
-    length.fill(max_len)
-    labels = np.asarray(batch_labels, dtype=np.float32)
-    return samples, length, labels
-
-def extract_val_ds():
-    validation_list = []
-    validation_label_list = []
-    #dedup_val_dict = {}
-    with open("val.csv", 'r') as f:
-        for line in f:
-            '''
-            if line in dedup_val_dict:
-                continue
-            dedup_val_dict[line] = 1
-            '''
-            elements = line.strip('\r\n').split(',')
-            validation_list.append([int(item) for item in elements[:-1]])
-            validation_label_list.append(int(elements[-1]))
-        f.close()
-    return validation_list, validation_label_list
-
-validation_truc_size = 90000
-def extract_val_samples(validation_list, global_max_len):
-    val_max_len = -1
-    for item in validation_list:
-        if len(item) > val_max_len:
-            val_max_len = len(item)
-    if val_max_len > global_max_len:
-        val_max_len = global_max_len
-    validation_length = np.zeros(shape=[len(validation_list)], dtype=np.int32)
-    validation_length.fill(val_max_len)
-    samples = tf.keras.preprocessing.sequence.pad_sequences(validation_list, maxlen=val_max_len, padding='post')
-    return samples[:validation_truc_size], validation_length[:validation_truc_size]
 
 parser = argparse.ArgumentParser(description='sentiment training')
 parser.add_argument('path', type=str, default='', help='model path')
 args = parser.parse_args()
 print("path is {0}".format(args.path))
+
+#slice_features, slice_lengths, slice_labels = data_fetch.slice_input_producer_data_fetch("./train.csv")
 
 train_size = 3974
 config = tf.ConfigProto(allow_soft_placement=True)
@@ -205,6 +120,7 @@ with tf.Session(config=config) as sess:
     train_writer = tf.summary.FileWriter(cfg.summaries_dir + cfg.train_summary_writer_path, sess.graph)
     modelObj = BiLSTM(sess)
     tf.global_variables_initializer().run()
+    sess.run(tf.local_variables_initializer())
     trainable = False
     epoch_iter = 0
 
@@ -216,19 +132,21 @@ with tf.Session(config=config) as sess:
     train_sample_size = 0
     total_loss = 0.0
 
-    validation_list, validation_label_list = extract_val_ds()
-    reader_iterator = streaming_data_fetch()
+    validation_list, validation_label_list = data_fetch.extract_val_ds('./val.csv')
+    reader_iterator = data_fetch.streaming_data_fetch("./train.tfrecord")
     try:
         starttime = datetime.datetime.now()
         while not coord.should_stop():
             train_feature, train_len, train_label = sess.run(reader_iterator)
+            #train_feature, train_len, train_label = sess.run([slice_features, slice_lengths, slice_labels])
             train_sample_size += train_feature.shape[0]
-            samples, length, labels = make_train_set(train_feature, train_len, train_label)
+            samples, length, labels = data_fetch.pad_train_set(train_feature, train_len, train_label)
             if length[0] > global_max_len:
                 global_max_len = length[0]
             _, loss = modelObj.train(samples, labels, length, max_len, epoch_iter)
             # _, loss = modelObj.train(train_feature, train_label, train_len, max_len, epoch_iter)
             total_loss += loss
+            #lr = modelObj.get_dense_layer(samples, labels, length, epoch_iter)
 
             if train_sample_size >= train_size:
                 total_loss /= float(train_sample_size)
@@ -239,8 +157,8 @@ with tf.Session(config=config) as sess:
                 train_sample_size = 0
                 total_loss = 0.0
 
-                samples, validation_length = extract_val_samples(validation_list, global_max_len)
-                validation_label = np.asarray(validation_label_list[:validation_truc_size], dtype=np.int32)
+                samples, validation_length = data_fetch.extract_val_samples(validation_list, global_max_len)
+                validation_label = np.asarray(validation_label_list[:data_fetch.validation_truc_size], dtype=np.int32)
                 print("in validation size 0 is {0}, 1 is {1}".format(np.sum(validation_label == 0), np.sum(validation_label == 1)))
                 eval_val = modelObj.predict(samples, validation_label, validation_length)
                 epoch_accu = float(eval_val[0]) / float(samples.shape[0])
@@ -271,8 +189,8 @@ with tf.Session(config=config) as sess:
     train_writer.add_summary(loss_summary, epoch_iter)
     print("epoch is {0}, train sample size is {1}, loss is {2}".format(
         epoch_iter, train_sample_size, total_loss))
-    samples, validation_length = extract_val_samples(validation_list, global_max_len)
-    eval_val = modelObj.predict(samples, np.asarray(validation_label_list[:validation_truc_size], dtype=np.int32),
+    samples, validation_length = data_fetch.extract_val_samples(validation_list, global_max_len)
+    eval_val = modelObj.predict(samples, np.asarray(validation_label_list[:data_fetch.validation_truc_size], dtype=np.int32),
                                 validation_length)
     epoch_accu = float(eval_val[0]) / float(samples.shape[0])
     accu_summary = modelObj.get_accu_summary(epoch_accu)
