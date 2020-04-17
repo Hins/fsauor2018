@@ -8,7 +8,7 @@ import numpy as np
 from config import cfg
 import data_fetch
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 batch_size = 256
 word_dict = {}
@@ -46,25 +46,22 @@ class BiLSTM(object):
             self.loss = tf.reduce_mean(
                 tf.nn.sigmoid_cross_entropy_with_logits(labels=self.label, logits=self.dense_layer))
             global_value = tf.identity(self.global_step)
-            '''
             self.learning_rate = tf.train.exponential_decay(1.0,
                                                        global_value,
                                                        decay_steps=cfg.epoch_size,
                                                        decay_rate=0.03,
                                                        staircase=True)
-            '''
-            self.learning_rate = tf.train.polynomial_decay(1.0, global_value, decay_steps=cfg.epoch_size)
+            # self.learning_rate = tf.train.polynomial_decay(1.0, global_value, decay_steps=cfg.epoch_size)
 
-            '''
             # truncated adam learning method
-            optimizer = tf.train.AdamOptimizer(learning_rate, beta1=0.5)
+            optimizer = tf.train.AdamOptimizer(self.learning_rate, beta1=0.5)
             grads = optimizer.compute_gradients(self.loss)
             for i, (g, v) in enumerate(grads):
                 if g is not None:
                     grads[i] = (tf.clip_by_norm(g, 5), v)  # clip gradients
             self.opt = optimizer.apply_gradients(grads)
-            '''
-            self.opt = tf.train.GradientDescentOptimizer(self.learning_rate).minimize(self.loss, global_step=None)
+
+            # self.opt = tf.train.GradientDescentOptimizer(self.learning_rate).minimize(self.loss, global_step=None)
 
             # dynamic learning rate adam
             # self.opt = tf.train.AdamOptimizer(learning_rate).minimize(self.loss, global_step=None)
@@ -118,7 +115,7 @@ print("path is {0}".format(args.path))
 
 #slice_features, slice_lengths, slice_labels = data_fetch.slice_input_producer_data_fetch("./train.csv")
 
-train_size = 39727
+train_size = 167412
 config = tf.ConfigProto(allow_soft_placement=True)
 with tf.Session(config=config) as sess:
     train_writer = tf.summary.FileWriter(cfg.summaries_dir + cfg.train_summary_writer_path, sess.graph)
@@ -161,11 +158,26 @@ with tf.Session(config=config) as sess:
                 train_sample_size = 0
                 total_loss = 0.0
 
+                test_reader_iterator = data_fetch.streaming_data_fetch("./test.tfrecord")
+                test_feature, test_len, test_label = sess.run(test_reader_iterator)
+                test_size = test_feature.shape[0]
+                epoch_accu = 0.0
+                for i in range(test_size):
+                    test_feature_item = np.reshape(test_feature[i], (1, test_feature[i].shape[0]))
+                    print(test_feature_item.shape)
+                    test_label_item = np.atleast_1d(test_label[i])
+                    print(test_label_item.shape)
+                    test_len_item = np.atleast_1d(test_len[i])
+                    print(test_len_item.shape)
+                    eval_val = modelObj.predict(test_feature_item, test_label_item, test_len_item)
+                    epoch_accu += float(eval_val[0])
+                '''
                 samples, validation_length = data_fetch.extract_val_samples(validation_list, global_max_len)
                 validation_label = np.asarray(validation_label_list[:data_fetch.validation_truc_size], dtype=np.int32)
                 print("in validation size 0 is {0}, 1 is {1}".format(np.sum(validation_label == 0), np.sum(validation_label == 1)))
                 eval_val = modelObj.predict(samples, validation_label, validation_length)
-                epoch_accu = float(eval_val[0]) / float(samples.shape[0])
+                '''
+                epoch_accu = float(eval_val[0]) / float(test_size)
                 accu_summary = modelObj.get_accu_summary(epoch_accu)
                 train_writer.add_summary(accu_summary, epoch_iter)
                 if epoch_accu > best_accu:
@@ -193,10 +205,20 @@ with tf.Session(config=config) as sess:
     train_writer.add_summary(loss_summary, epoch_iter)
     print("epoch is {0}, train sample size is {1}, loss is {2}".format(
         epoch_iter, train_sample_size, total_loss))
+    test_reader_iterator = data_fetch.streaming_data_fetch("./test.tfrecord")
+    test_feature, test_len, test_label = sess.run(test_reader_iterator)
+    test_size = test_feature.shape[0]
+    epoch_accu = 0.0
+    for i in range(test_size):
+        eval_val = modelObj.predict(test_feature[i], test_label[i], test_len[i])
+        epoch_accu += float(eval_val[0])
+    epoch_accu = float(eval_val[0]) / float(test_size)
+    '''
     samples, validation_length = data_fetch.extract_val_samples(validation_list, global_max_len)
     eval_val = modelObj.predict(samples, np.asarray(validation_label_list[:data_fetch.validation_truc_size], dtype=np.int32),
                                 validation_length)
     epoch_accu = float(eval_val[0]) / float(samples.shape[0])
+    '''
     accu_summary = modelObj.get_accu_summary(epoch_accu)
     train_writer.add_summary(accu_summary, epoch_iter)
     if epoch_accu > best_accu:
